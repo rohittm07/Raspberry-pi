@@ -1,0 +1,129 @@
+from gpiozero import Motor, PWMOutputDevice
+from picamera2 import Picamera2
+
+import cv2
+import numpy as np
+import time
+
+# === Motor Setup ===
+in1 = 27 #13 Right motor forward
+in2 = 22 #15 Right motor backward
+in3 = 24 #18 Left motor forward
+in4 = 23 #16 Left motor backward
+
+ena = PWMOutputDevice(12)  #32 Left motor speed control
+enb = PWMOutputDevice(13)  #33 Right motor speed control
+
+motorL = Motor(forward=in3, backward=in4)
+motorR = Motor(forward=in1, backward=in2)
+
+speed = 0.275 # Starting speed
+ena.value = speed
+enb.value = speed
+
+# === Motor Movement Functions ===
+def stop():
+    motorL.stop()
+    motorR.stop()
+
+def forward():
+    #motorL.backward()
+    #motorR.backward()
+    
+    motorR.forward()
+    motorL.backward()
+
+def backward():
+    motorL.forward()
+    motorR.forward()
+
+def instant_left():
+    motorL.backward()
+    motorR.backward()
+
+def instant_right():
+    time.sleep(0.5)
+    motorL.forward()
+    motorR.forward()
+
+# === Color Detection ===
+def detect_color(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # Green color (turn left)
+    lower_green = np.array([40, 120, 50])
+    upper_green = np.array([80, 255, 255])
+    mask_green = cv2.inRange(hsv, lower_green, upper_green)
+    
+    # Red color (turn right)
+    lower_red = np.array([0, 73, 143])
+    upper_red = np.array([179, 255, 255])
+    mask_red = cv2.inRange(hsv, lower_red, upper_red)
+    
+    if cv2.countNonZero(mask_green) > 500:
+        return "green"
+    elif cv2.countNonZero(mask_red) > 500:
+        return "red"
+    else:
+        return "none"
+
+# === Camera Setup ===
+picam2 = Picamera2()
+picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (1280, 720)}))
+picam2.start()
+time.sleep(2)
+
+try:
+    while True:
+        frame = picam2.capture_array()
+        frame = cv2.resize(frame, (960, 720))  # Resize for performance and visibility
+        roi = frame[480:720, :]  # Focus on bottom portion of the frame for line tracking
+        
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        lower_black = np.array([0, 0, 0])  #black
+        upper_black = np.array([93, 97, 137])#black
+        mask_black = cv2.inRange(hsv, lower_black, upper_black)
+        M = cv2.moments(mask_black)
+
+        color = detect_color(roi)
+
+        if color == "green":
+            print("Green detected - turning left")
+            instant_left()
+            time.sleep(1)
+
+        elif color == "red":
+            print("Red detected - turning right")
+            instant_right()
+            time.sleep(1)
+
+        elif M["m00"] != 0:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+            cv2.circle(frame, (cx, cy + 480), 5, (255, 0, 0), -1)
+
+            if cx < 350:
+                print("Line on left - turning left")
+                instant_left()
+            elif cx > 610:
+                print("Line on right - turning right")
+                instant_right()
+            else:
+                print("Line centered - moving forward")
+                forward()
+        else:
+            print("No line detected - stopping")
+            stop()
+            time.sleep(1)
+
+        cv2.imshow("Line & Color Tracking", frame)
+        if cv2.waitKey(1) == ord('q'):
+            break
+
+except KeyboardInterrupt:
+    print("Stopped by user.")
+
+finally:
+    stop()
+    cv2.destroyAllWindows()
+
